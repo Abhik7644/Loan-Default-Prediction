@@ -1,70 +1,115 @@
 """
-app.py  —  Flask REST API for Loan Prediction System
------------------------------------------------------
+app.py — FastAPI REST API for Loan Prediction System
+-------------------------------------------------------
 Endpoints:
   POST /api/predict        — two-stage prediction
   GET  /api/health         — health check
   GET  /api/model-stats    — model evaluation metrics
 """
 
-from flask import Flask, request, jsonify
-from flask_cors import CORS
-import os, sys, traceback
+import os
+import sys
+import traceback
+from typing import Optional
+
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from src.predict import predict
 
-app = Flask(__name__)
-CORS(app)   # allow React frontend on localhost:5173
+app = FastAPI(title="Loan Prediction API")
+
+# allow React frontend on localhost:5173
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
-# ─── Health ──────────────────────────────────────────────────────────────────
+# ─── Schemas ────────────────────────────────────────────────────────────────
 
-@app.route("/api/health", methods=["GET"])
+class LoanApplication(BaseModel):
+    grade: str = "C"
+    annual_inc: float = 0
+    short_emp: int = 0
+    emp_length_num: int = 5
+    home_ownership: str = "RENT"
+    dti: float = 15
+    purpose: str = "other"
+    term: str = " 36 months"
+    last_delinq_none: int = 1
+    revol_util: float = 40
+    total_rec_late_fee: float = 0
+    od_ratio: float = 0.5
+
+    loan_amount: Optional[float] = None
+    term_months: Optional[int] = 36
+
+
+class ModelMetric(BaseModel):
+    name: str
+    f1: float
+    auc: float
+    accuracy: float
+
+
+class ModelStatsResponse(BaseModel):
+    models: list[ModelMetric]
+    best_model: str
+    dataset_size: int
+    features: int
+    class_balance: dict
+
+
+# ─── Health ─────────────────────────────────────────────────────────────────
+
+@app.get("/api/health")
 def health():
-    return jsonify({"status": "ok", "message": "Loan Prediction API is running"})
+    return {"status": "ok", "message": "Loan Prediction API is running"}
 
 
-# ─── Main prediction endpoint ─────────────────────────────────────────────────
+# ─── Main prediction endpoint ────────────────────────────────────────────────
 
-@app.route("/api/predict", methods=["POST"])
-def predict_loan():
+@app.post("/api/predict")
+def predict_loan(application: LoanApplication):
     try:
-        body = request.get_json()
-        if not body:
-            return jsonify({"error": "Request body is empty"}), 400
-
         applicant = {
-            "grade":              body.get("grade", "C"),
-            "annual_inc":         float(body.get("annual_inc", 0)),
-            "short_emp":          int(body.get("short_emp", 0)),
-            "emp_length_num":     int(body.get("emp_length_num", 5)),
-            "home_ownership":     body.get("home_ownership", "RENT"),
-            "dti":                float(body.get("dti", 15)),
-            "purpose":            body.get("purpose", "other"),
-            "term":               body.get("term", " 36 months"),
-            "last_delinq_none":   int(body.get("last_delinq_none", 1)),
-            "revol_util":         float(body.get("revol_util", 40)),
-            "total_rec_late_fee": float(body.get("total_rec_late_fee", 0)),
-            "od_ratio":           float(body.get("od_ratio", 0.5)),
+            "grade":              application.grade,
+            "annual_inc":         application.annual_inc,
+            "short_emp":          application.short_emp,
+            "emp_length_num":     application.emp_length_num,
+            "home_ownership":     application.home_ownership,
+            "dti":                application.dti,
+            "purpose":            application.purpose,
+            "term":               application.term,
+            "last_delinq_none":   application.last_delinq_none,
+            "revol_util":         application.revol_util,
+            "total_rec_late_fee": application.total_rec_late_fee,
+            "od_ratio":           application.od_ratio,
         }
 
-        loan_amount  = float(body["loan_amount"])  if body.get("loan_amount")  else None
-        term_months  = int(body["term_months"])    if body.get("term_months")  else 36
-
-        result = predict(applicant, loan_amount=loan_amount, term_months=term_months)
-        return jsonify(result), 200
+        result = predict(
+            applicant,
+            loan_amount=application.loan_amount,
+            term_months=application.term_months or 36,
+        )
+        return result
 
     except Exception as e:
         traceback.print_exc()
-        return jsonify({"error": str(e)}), 500
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ─── Model stats ──────────────────────────────────────────────────────────────
 
-@app.route("/api/model-stats", methods=["GET"])
+@app.get("/api/model-stats", response_model=ModelStatsResponse)
 def model_stats():
-    return jsonify({
+    return {
         "models": [
             {"name": "Logistic Regression", "f1": 0.4308, "auc": 0.7134, "accuracy": 0.6577},
             {"name": "Decision Tree",       "f1": 0.3547, "auc": 0.6730, "accuracy": 0.7180},
@@ -74,8 +119,9 @@ def model_stats():
         "dataset_size": 20000,
         "features": 14,
         "class_balance": {"non_default": "80%", "default": "20%"},
-    })
+    }
 
 
 if __name__ == "__main__":
-    app.run(debug=True, port=5000)
+    import uvicorn
+    uvicorn.run("app:app", host="0.0.0.0", port=5000, reload=True)
