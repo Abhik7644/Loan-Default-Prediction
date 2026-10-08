@@ -1,195 +1,450 @@
 """
 train.py
-────────
-Trains two models and saves them as .pkl pipelines:
+--------
 
-  1. Default-risk model   → predicts bad_loan (0/1)
-  2. Loan-approval model  → predicts loan_approved (0/1)
-     (approval label is derived from the rules in config.py)
+Train the loan default prediction model.
+
+Pipeline:
+
+    Raw dataset
+        ↓
+    Basic preprocessing
+        ↓
+    Train/Test split
+        ↓
+    Imputation
+        ↓
+    Scaling / One-Hot Encoding
+        ↓
+    SMOTE
+        ↓
+    Logistic Regression
+        ↓
+    Hyperparameter tuning
+        ↓
+    Evaluation
+        ↓
+    Saved model
 
 Run:
+
     python src/train.py
 """
 
-import os, sys
-import pandas as pd
-import numpy as np
+import os
+import sys
+
 import joblib
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from config import (
-    DATA_RAW, MODEL_DIR,
-    DEFAULT_MODEL_PATH, APPROVAL_MODEL_PATH,
-    TARGET_COL, CATEGORICAL_COLS, NUMERICAL_COLS,
-    GRADE_MAP, DROP_COLS, APPROVAL_RULES,
-    RANDOM_STATE, TEST_SIZE, SMOTE_STRATEGY, RF_PARAM_GRID
-)
-from src.preprocess import load_raw, preprocess
-
-from sklearn.pipeline import Pipeline
 from sklearn.compose import ColumnTransformer
-from sklearn.preprocessing import OneHotEncoder, MinMaxScaler
 from sklearn.impute import SimpleImputer
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.model_selection import train_test_split, RandomizedSearchCV
+from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
-    classification_report, f1_score, roc_auc_score, confusion_matrix
+    classification_report,
+    confusion_matrix,
+    f1_score,
+    precision_score,
+    recall_score,
+    roc_auc_score,
 )
-from imblearn.pipeline import Pipeline as ImbPipeline
+from sklearn.model_selection import RandomizedSearchCV, train_test_split
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import MinMaxScaler, OneHotEncoder
+
 from imblearn.over_sampling import SMOTE
+from imblearn.pipeline import Pipeline as ImbPipeline
 
 
-# ─── Helpers ─────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Project imports
+# ---------------------------------------------------------------------------
 
-def build_sklearn_pipeline(numerical_cols, categorical_cols):
+sys.path.insert(
+    0,
+    os.path.dirname(
+        os.path.dirname(os.path.abspath(__file__))
+    ),
+)
+
+from config import (
+    MODEL_DIR,
+    DEFAULT_MODEL_PATH,
+    NUMERICAL_COLS,
+    CATEGORICAL_COLS,
+    RANDOM_STATE,
+    TEST_SIZE,
+    SMOTE_STRATEGY,
+)
+
+from src.preprocess import (
+    load_raw,
+    prepare_training_data,
+)
+
+
+# ---------------------------------------------------------------------------
+# Logistic Regression hyperparameter search space
+# ---------------------------------------------------------------------------
+
+LR_PARAM_GRID = {
+    "model__C": [0.01, 0.1, 1, 10, 100],
+    "model__solver": ["liblinear", "lbfgs"],
+    "model__class_weight": [None, "balanced"],
+}
+
+
+# ---------------------------------------------------------------------------
+# Build preprocessing + model pipeline
+# ---------------------------------------------------------------------------
+
+def build_pipeline(
+    numerical_cols,
+    categorical_cols,
+):
     """
-    Build a reusable sklearn ColumnTransformer + RandomForest pipeline.
-    Preprocessing is done inside the pipeline so predict() works on raw input.
+    Build the complete ML pipeline.
+
+    Numerical features:
+        Missing values → mean imputation
+        Scaling → MinMaxScaler
+
+    Categorical features:
+        Missing values → most frequent
+        Encoding → OneHotEncoder
+
+    Then:
+        SMOTE → Logistic Regression
     """
-    numeric_transformer = Pipeline([
-        ("imputer", SimpleImputer(strategy="mean")),
-        ("scaler",  MinMaxScaler()),
-    ])
-    categorical_transformer = Pipeline([
-        ("imputer", SimpleImputer(strategy="most_frequent")),
-        ("onehot",  OneHotEncoder(handle_unknown="ignore", sparse_output=False)),
-    ])
-    preprocessor = ColumnTransformer([
-        ("num", numeric_transformer,  numerical_cols),
-        ("cat", categorical_transformer, categorical_cols),
-    ])
-    pipeline = ImbPipeline([
-        ("preprocessor", preprocessor),
-        ("smote",  SMOTE(sampling_strategy=SMOTE_STRATEGY, random_state=RANDOM_STATE)),
-        ("model",  RandomForestClassifier(random_state=RANDOM_STATE)),
-    ])
+
+    numerical_pipeline = Pipeline(
+        [
+            (
+                "imputer",
+                SimpleImputer(strategy="mean"),
+            ),
+            (
+                "scaler",
+                MinMaxScaler(),
+            ),
+        ]
+    )
+
+    categorical_pipeline = Pipeline(
+        [
+            (
+                "imputer",
+                SimpleImputer(strategy="most_frequent"),
+            ),
+            (
+                "onehot",
+                OneHotEncoder(
+                    handle_unknown="ignore",
+                    sparse_output=False,
+                ),
+            ),
+        ]
+    )
+
+    preprocessor = ColumnTransformer(
+        [
+            (
+                "numerical",
+                numerical_pipeline,
+                numerical_cols,
+            ),
+            (
+                "categorical",
+                categorical_pipeline,
+                categorical_cols,
+            ),
+        ]
+    )
+
+    pipeline = ImbPipeline(
+        [
+            (
+                "preprocessor",
+                preprocessor,
+            ),
+            (
+                "smote",
+                SMOTE(
+                    sampling_strategy=SMOTE_STRATEGY,
+                    random_state=RANDOM_STATE,
+                ),
+            ),
+            (
+                "model",
+                LogisticRegression(
+                    max_iter=2000,
+                    random_state=RANDOM_STATE,
+                ),
+            ),
+        ]
+    )
+
     return pipeline
 
 
-def evaluate(y_true, y_pred, y_proba, label="Model"):
-    """Print a standard evaluation block."""
-    print(f"\n{'='*50}")
-    print(f"  {label}  Evaluation")
-    print(f"{'='*50}")
-    print(classification_report(y_true, y_pred, target_names=["No","Yes"]))
-    print(f"  F1 Score : {f1_score(y_true, y_pred):.4f}")
-    print(f"  ROC-AUC  : {roc_auc_score(y_true, y_proba):.4f}")
-    print(f"  Confusion Matrix:\n{confusion_matrix(y_true, y_pred)}")
+# ---------------------------------------------------------------------------
+# Evaluation
+# ---------------------------------------------------------------------------
+
+def evaluate_model(
+    model,
+    X_test,
+    y_test,
+):
+    """
+    Evaluate the final model on the untouched test set.
+    """
+
+    # Class prediction using default threshold = 0.50
+    y_pred = model.predict(X_test)
+
+    # Probability of Default
+    y_probability = model.predict_proba(
+        X_test
+    )[:, 1]
+
+    f1 = f1_score(
+        y_test,
+        y_pred,
+    )
+
+    precision = precision_score(
+        y_test,
+        y_pred,
+    )
+
+    recall = recall_score(
+        y_test,
+        y_pred,
+    )
+
+    roc_auc = roc_auc_score(
+        y_test,
+        y_probability,
+    )
+
+    print("\n" + "=" * 60)
+    print("FINAL MODEL EVALUATION")
+    print("=" * 60)
+
+    print(
+        f"\nF1 Score      : {f1:.4f}"
+    )
+
+    print(
+        f"Precision     : {precision:.4f}"
+    )
+
+    print(
+        f"Recall        : {recall:.4f}"
+    )
+
+    print(
+        f"ROC-AUC       : {roc_auc:.4f}"
+    )
+
+    print("\nClassification Report:")
+
+    print(
+        classification_report(
+            y_test,
+            y_pred,
+            target_names=[
+                "No Default",
+                "Default",
+            ],
+        )
+    )
+
+    print("Confusion Matrix:")
+
+    print(
+        confusion_matrix(
+            y_test,
+            y_pred,
+        )
+    )
+
+    return {
+        "f1": f1,
+        "precision": precision,
+        "recall": recall,
+        "roc_auc": roc_auc,
+    }
 
 
-# ─── Default-risk model ───────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Training
+# ---------------------------------------------------------------------------
 
-def train_default_model(df_raw: pd.DataFrame) -> None:
-    """Train bad_loan classifier and save pipeline."""
-    print("\n[train] ── Training Default-Risk Model ──")
+def train_model():
+    """
+    Complete training workflow.
+    """
 
-    # Light preprocessing (grade map + typo fix) — no one-hot yet (pipeline handles it)
-    df = df_raw.copy()
-    for col in DROP_COLS:
-        if col in df.columns:
-            df.drop(columns=col, inplace=True)
-    df["term"] = df["term"].str.strip().str.lower()
-    df["grade"] = df["grade"].map(GRADE_MAP)
-    df.dropna(subset=[TARGET_COL], inplace=True)
+    print("\n" + "=" * 60)
+    print("LOAN DEFAULT MODEL TRAINING")
+    print("=" * 60)
 
-    X = df.drop(columns=[TARGET_COL])
-    y = df[TARGET_COL].astype(int)
+    # ---------------------------------------------------------------
+    # 1. Load data
+    # ---------------------------------------------------------------
 
-    # Identify actual columns present
-    num_cols = [c for c in NUMERICAL_COLS if c in X.columns] + ["grade"]
-    cat_cols = [c for c in CATEGORICAL_COLS if c in X.columns]
+    df = load_raw()
+
+    print(
+        f"\n[train] Raw dataset shape: {df.shape}"
+    )
+
+    # ---------------------------------------------------------------
+    # 2. Basic deterministic preprocessing
+    # ---------------------------------------------------------------
+
+    X, y = prepare_training_data(df)
+
+    print(
+        f"[train] Feature matrix shape: {X.shape}"
+    )
+
+    print(
+        f"[train] Target distribution:\n{y.value_counts()}"
+    )
+
+    # ---------------------------------------------------------------
+    # 3. Train/Test split
+    # ---------------------------------------------------------------
 
     X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=TEST_SIZE, random_state=RANDOM_STATE, stratify=y
+        X,
+        y,
+        test_size=TEST_SIZE,
+        random_state=RANDOM_STATE,
+        stratify=y,
     )
 
-    pipe = build_sklearn_pipeline(num_cols, cat_cols)
-
-    # Hyperparameter search
-    search = RandomizedSearchCV(
-        pipe, RF_PARAM_GRID,
-        n_iter=8, cv=3, scoring="f1",
-        random_state=RANDOM_STATE, n_jobs=-1, verbose=1
-    )
-    search.fit(X_train, y_train)
-    best = search.best_estimator_
-
-    y_pred  = best.predict(X_test)
-    y_proba = best.predict_proba(X_test)[:, 1]
-    evaluate(y_test, y_pred, y_proba, label="Default-Risk")
-
-    os.makedirs(MODEL_DIR, exist_ok=True)
-    joblib.dump(best, DEFAULT_MODEL_PATH)
-    print(f"[train] Saved default model → {DEFAULT_MODEL_PATH}")
-
-
-# ─── Loan-approval model ──────────────────────────────────────────────────────
-
-def create_approval_label(df: pd.DataFrame) -> pd.Series:
-    """
-    Rule-based approval label derived from APPROVAL_RULES in config.
-    1 = eligible for loan, 0 = not eligible.
-    """
-    rules = APPROVAL_RULES
-    approved = (
-        (df["dti"].fillna(999)          <= rules["max_dti"])         &
-        (df["annual_inc"].fillna(0)     >= rules["min_annual_inc"])  &
-        (df["grade"].map(GRADE_MAP).fillna(0) >= rules["min_grade"]) &
-        (df["revol_util"].fillna(999)   <= rules["max_revol_util"])
-    )
-    return approved.astype(int)
-
-
-def train_approval_model(df_raw: pd.DataFrame) -> None:
-    """Train loan-approval classifier and save pipeline."""
-    print("\n[train] ── Training Loan-Approval Model ──")
-
-    df = df_raw.copy()
-    for col in DROP_COLS:
-        if col in df.columns:
-            df.drop(columns=col, inplace=True)
-    df["term"] = df["term"].str.strip().str.lower()
-
-    # Create approval label
-    df["loan_approved"] = create_approval_label(df)
-    df["grade"] = df["grade"].map(GRADE_MAP)
-
-    X = df.drop(columns=[TARGET_COL, "loan_approved"])
-    y = df["loan_approved"].astype(int)
-
-    num_cols = [c for c in NUMERICAL_COLS if c in X.columns] + ["grade"]
-    cat_cols = [c for c in CATEGORICAL_COLS if c in X.columns]
-
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=TEST_SIZE, random_state=RANDOM_STATE, stratify=y
+    print(
+        f"\n[train] Training samples: {len(X_train):,}"
     )
 
-    pipe = build_sklearn_pipeline(num_cols, cat_cols)
+    print(
+        f"[train] Test samples    : {len(X_test):,}"
+    )
+
+    # ---------------------------------------------------------------
+    # 4. Determine actual columns present
+    # ---------------------------------------------------------------
+
+    numerical_cols = [
+        column
+        for column in NUMERICAL_COLS
+        if column in X_train.columns
+    ]
+
+    # Grade is already numeric after prepare_training_data()
+    if "grade" in X_train.columns:
+        numerical_cols.append("grade")
+
+    categorical_cols = [
+        column
+        for column in CATEGORICAL_COLS
+        if column in X_train.columns
+    ]
+
+    print(
+        f"\n[train] Numerical columns: {numerical_cols}"
+    )
+
+    print(
+        f"[train] Categorical columns: {categorical_cols}"
+    )
+
+    # ---------------------------------------------------------------
+    # 5. Build pipeline
+    # ---------------------------------------------------------------
+
+    pipeline = build_pipeline(
+        numerical_cols,
+        categorical_cols,
+    )
+
+    # ---------------------------------------------------------------
+    # 6. Hyperparameter tuning
+    # ---------------------------------------------------------------
+
+    print(
+        "\n[train] Starting Logistic Regression RandomizedSearchCV..."
+    )
 
     search = RandomizedSearchCV(
-        pipe, RF_PARAM_GRID,
-        n_iter=8, cv=3, scoring="f1",
-        random_state=RANDOM_STATE, n_jobs=-1, verbose=1
+        estimator=pipeline,
+        param_distributions=LR_PARAM_GRID,
+        n_iter=10,
+        scoring="f1",
+        cv=3,
+        random_state=RANDOM_STATE,
+        n_jobs=-1,
+        verbose=1,
     )
-    search.fit(X_train, y_train)
-    best = search.best_estimator_
 
-    y_pred  = best.predict(X_test)
-    y_proba = best.predict_proba(X_test)[:, 1]
-    evaluate(y_test, y_pred, y_proba, label="Loan-Approval")
+    search.fit(
+        X_train,
+        y_train,
+    )
 
-    joblib.dump(best, APPROVAL_MODEL_PATH)
-    print(f"[train] Saved approval model → {APPROVAL_MODEL_PATH}")
+    print(
+        "\n[train] Best parameters:"
+    )
+
+    print(search.best_params_)
+
+    print(
+        f"\n[train] Best CV F1: "
+        f"{search.best_score_:.4f}"
+    )
+
+    # ---------------------------------------------------------------
+    # 7. Evaluate on untouched test set
+    # ---------------------------------------------------------------
+
+    metrics = evaluate_model(
+        search.best_estimator_,
+        X_test,
+        y_test,
+    )
+
+    # ---------------------------------------------------------------
+    # 8. Save final pipeline
+    # ---------------------------------------------------------------
+
+    os.makedirs(
+        MODEL_DIR,
+        exist_ok=True,
+    )
+
+    joblib.dump(
+        search.best_estimator_,
+        DEFAULT_MODEL_PATH,
+    )
+
+    print(
+        f"\n[train] Model saved to:"
+        f"\n        {DEFAULT_MODEL_PATH}"
+    )
+
+    print(
+        "\n[train] ✓ Training completed successfully."
+    )
+
+    return search.best_estimator_, metrics
 
 
-# ─── Entry point ──────────────────────────────────────────────────────────────
-
-def train_all():
-    df_raw = pd.read_csv(DATA_RAW, low_memory=False)
-    train_default_model(df_raw)
-    train_approval_model(df_raw)
-    print("\n[train] ✓ Both models trained and saved.")
-
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    train_all()
+    train_model()

@@ -12,17 +12,39 @@ export default function App() {
 
   const handlePredict = async (formData) => {
     setLoading(true)
+
     try {
-      const res = await fetch("http://localhost:5000/api/predict", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(formData),
-      })
-      const data = await res.json()
+      const response = await fetch(
+        "http://localhost:5000/api/predict",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(formData),
+        }
+      )
+
+      const data = await response.json()
+
+      if (!response.ok) {
+        throw new Error(
+          data.detail || "Prediction request failed."
+        )
+      }
+
       setResult(data)
       setPage("result")
-    } catch (err) {
-      alert("Could not connect to backend. Make sure Flask is running on port 5000.")
+
+    } catch (error) {
+      console.error("Prediction error:", error)
+
+      alert(
+        error.message ||
+        "Could not connect to the FastAPI backend. " +
+        "Make sure the backend is running on port 5000."
+      )
+
     } finally {
       setLoading(false)
     }
@@ -30,12 +52,34 @@ export default function App() {
 
   return (
     <div className="app">
-      <Navbar page={page} setPage={setPage} />
+
+      <Navbar
+        page={page}
+        setPage={setPage}
+      />
+
       <main className="main-content">
-        {page === "form"      && <LoanForm onSubmit={handlePredict} loading={loading} />}
-        {page === "result"    && <ResultPage result={result} onBack={() => setPage("form")} />}
-        {page === "dashboard" && <Dashboard />}
+
+        {page === "form" && (
+          <LoanForm
+            onSubmit={handlePredict}
+            loading={loading}
+          />
+        )}
+
+        {page === "result" && (
+          <ResultPage
+            result={result}
+            onBack={() => setPage("form")}
+          />
+        )}
+
+        {page === "dashboard" && (
+          <Dashboard />
+        )}
+
       </main>
+
     </div>
   )
 }

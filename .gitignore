@@ -1,28 +1,21 @@
- # Python
-__pycache__/
-*.pyc
-*.pyo
-.pytest_cache/
-
-# Virtual environment
+# Python
 venv/
-
-# Models (large files)
-backend/models/*.pkl
-
-# Processed data
-backend/data/processed/
+__pycache__/
+*.py[cod]
+.pytest_cache/
 
 # Node
 node_modules/
-frontend/node_modules/
+dist/
+.vite/
 
-# Build output
-frontend/dist/
+# Environment
+.env
+.env.*
 
-# OS files
-.DS_Store
-Thumbs.db
-
-# VSCode
+# IDE
 .vscode/
+
+# OS
+.DS_Store
+Thumbs.dbn

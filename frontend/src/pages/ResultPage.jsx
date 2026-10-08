@@ -1,149 +1,216 @@
 function getRiskColor(risk) {
-  if (!risk || risk === "N/A") return "blue"
-  if (risk === "Low Risk")    return "green"
-  if (risk === "Medium Risk") return "yellow"
-  return "red"
+  if (risk === "LOW") return "green"
+  if (risk === "MEDIUM") return "yellow"
+  if (risk === "HIGH") return "red"
+  return "blue"
 }
 
-function getVerdictClass(verdict = "") {
-  if (verdict.includes("✅")) return "approve"
-  if (verdict.includes("⚠"))  return "warn"
+function getDecisionClass(decision) {
+  if (decision === "APPROVED") return "approve"
   return "reject"
 }
 
 export default function ResultPage({ result, onBack }) {
-  if (!result) return (
-    <div className="result-page animate-in">
-      <p style={{ color: "var(--muted)" }}>No result yet. Go back and run a prediction.</p>
-      <button className="back-btn" onClick={onBack}>← Back to Form</button>
-    </div>
-  )
+  if (!result) {
+    return (
+      <div className="result-page animate-in">
+        <p style={{ color: "var(--muted)" }}>
+          No result yet. Go back and run a prediction.
+        </p>
 
-  const riskColor  = getRiskColor(result.default_risk)
-  const score      = result.risk_score ?? 0
-  const emi        = result.emi_info
-  const suggestion = result.loan_suggestion
+        <button
+          className="back-btn"
+          onClick={onBack}
+        >
+          ← Back to Form
+        </button>
+      </div>
+    )
+  }
+
+  const riskColor = getRiskColor(result.risk_level)
+
+  const probability =
+    result.default_probability !== null &&
+    result.default_probability !== undefined
+      ? result.default_probability
+      : null
+
+  const probabilityPercent =
+    probability !== null
+      ? (probability * 100).toFixed(1)
+      : null
 
   return (
     <div className="result-page animate-in">
 
-      {/* Verdict banner */}
-      <div className={`verdict-banner ${getVerdictClass(result.verdict)}`}>
+      {/* Verdict */}
+      <div
+        className={`verdict-banner ${getDecisionClass(
+          result.decision
+        )}`}
+      >
         <div className="verdict-icon">
-          {result.approved ? (result.default_risk === "High Risk" ? "❌" : result.default_risk === "Medium Risk" ? "⚠️" : "✅") : "❌"}
+          {result.decision === "APPROVED" ? "✅" : "❌"}
         </div>
+
         <div className="verdict-text">
-          <h2>{result.default_risk !== "N/A" ? result.default_risk : "Not Eligible"}</h2>
-          <p>{result.verdict?.replace(/[✅⚠️❌]/g, "").trim()}</p>
+          <h2>{result.decision}</h2>
+
+          <p>
+            {result.eligible
+              ? "Applicant passed the eligibility rules and was evaluated by the default-risk model."
+              : result.reason}
+          </p>
         </div>
       </div>
 
-      {/* Metrics row */}
+      {/* Main metrics */}
       <div className="result-grid">
 
-        {/* Approval */}
+        {/* Eligibility */}
         <div className="metric-card">
-          <div className="metric-label">Eligibility</div>
-          <div className={`metric-value ${result.approved ? "green" : "red"}`}>
-            {result.approved ? "Approved" : "Rejected"}
+          <div className="metric-label">
+            Eligibility
           </div>
-          <div style={{ marginTop: "0.5rem", fontSize: "0.82rem", color: "var(--muted)" }}>
-            Confidence: {(result.approval_prob * 100).toFixed(1)}%
+
+          <div
+            className={`metric-value ${
+              result.eligible ? "green" : "red"
+            }`}
+          >
+            {result.eligible
+              ? "Eligible"
+              : "Not Eligible"}
           </div>
         </div>
 
-        {/* Risk score */}
+        {/* Decision */}
         <div className="metric-card">
-          <div className="metric-label">Risk Score</div>
-          <div className={`metric-value ${riskColor}`}>
-            {result.risk_score !== null ? result.risk_score : "—"}<span style={{ fontSize: "1rem", fontWeight: 400 }}>/100</span>
+          <div className="metric-label">
+            Final Decision
           </div>
-          <div className="risk-bar-wrap">
-            <div className="risk-bar-track">
-              <div className={`risk-bar-fill ${riskColor}`} style={{ width: `${score}%` }} />
-            </div>
-            <div className="risk-bar-labels"><span>0</span><span>50</span><span>100</span></div>
+
+          <div
+            className={`metric-value ${
+              result.decision === "APPROVED"
+                ? "green"
+                : "red"
+            }`}
+          >
+            {result.decision}
           </div>
         </div>
 
-        {/* Default probability */}
+        {/* Risk */}
         <div className="metric-card">
-          <div className="metric-label">Default Probability</div>
-          <div className={`metric-value ${riskColor}`}>
-            {result.default_prob !== null ? `${(result.default_prob * 100).toFixed(1)}%` : "—"}
+          <div className="metric-label">
+            Default Risk
           </div>
-          <div style={{ marginTop: "0.5rem", fontSize: "0.82rem", color: "var(--muted)" }}>
-            {result.default_risk ?? "Stage 2 skipped"}
+
+          <div
+            className={`metric-value ${riskColor}`}
+          >
+            {result.risk_level ?? "—"}
+          </div>
+
+          <div
+            style={{
+              marginTop: "0.5rem",
+              fontSize: "0.82rem",
+              color: "var(--muted)",
+            }}
+          >
+            ML risk assessment
           </div>
         </div>
 
-        {/* Approval probability */}
+        {/* Default Probability */}
         <div className="metric-card">
-          <div className="metric-label">Approval Probability</div>
-          <div className="metric-value blue">
-            {(result.approval_prob * 100).toFixed(1)}%
+          <div className="metric-label">
+            Default Probability
           </div>
-          <div style={{ marginTop: "0.5rem", fontSize: "0.82rem", color: "var(--muted)" }}>
-            Based on eligibility model
+
+          <div
+            className={`metric-value ${riskColor}`}
+          >
+            {probabilityPercent !== null
+              ? `${probabilityPercent}%`
+              : "—"}
+          </div>
+
+          <div
+            style={{
+              marginTop: "0.5rem",
+              fontSize: "0.82rem",
+              color: "var(--muted)",
+            }}
+          >
+            {result.eligible
+              ? `Decision threshold: ${result.threshold}`
+              : "ML prediction skipped"}
           </div>
         </div>
+
       </div>
 
-      {/* Reasons */}
-      {result.reasons?.length > 0 && (
-        <div className="card card-sm" style={{ marginBottom: "1rem" }}>
-          <div className="metric-label" style={{ marginBottom: "0.25rem" }}>Issues Flagged</div>
+      {/* Failed eligibility rules */}
+      {result.failed_rules?.length > 0 && (
+        <div
+          className="card card-sm"
+          style={{ marginBottom: "1rem" }}
+        >
+          <div
+            className="metric-label"
+            style={{ marginBottom: "0.5rem" }}
+          >
+            Eligibility Issues
+          </div>
+
           <ul className="reasons-list">
-            {result.reasons.map((r, i) => <li key={i}>{r}</li>)}
+            {result.failed_rules.map((rule, index) => (
+              <li key={index}>
+                {rule.replace(/_/g, " ")}
+              </li>
+            ))}
           </ul>
         </div>
       )}
 
-      {/* EMI Info */}
-      {emi && (
-        <div className="card card-sm" style={{ marginBottom: "1rem" }}>
-          <div className="metric-label">EMI Feasibility</div>
-          <div className="emi-grid">
-            <div className="emi-item">
-              <div className="val">${emi.monthly_inc?.toLocaleString()}</div>
-              <div className="lbl">Monthly Income</div>
-            </div>
-            <div className="emi-item">
-              <div className="val">${emi.current_emi_burden?.toLocaleString()}</div>
-              <div className="lbl">Existing Burden / mo</div>
-            </div>
-            <div className="emi-item">
-              <div className="val">${emi.available_for_emi?.toLocaleString()}</div>
-              <div className="lbl">Available for EMI</div>
-            </div>
-            {emi.proposed_emi && (
-              <div className="emi-item">
-                <div className="val" style={{ color: emi.feasible ? "var(--green)" : "var(--red)" }}>
-                  ${emi.proposed_emi?.toLocaleString()}
-                </div>
-                <div className="lbl">Proposed EMI / mo</div>
-              </div>
-            )}
-            <div className="emi-item">
-              <div className="val">{emi.feasible ? "✅ Yes" : "❌ No"}</div>
-              <div className="lbl">EMI Affordable?</div>
-            </div>
-            <div className="emi-item">
-              <div className="val">${emi.recommended_max_loan?.toLocaleString()}</div>
-              <div className="lbl">Max Loan You Can Afford</div>
-            </div>
+      {/* Explanation */}
+      {result.eligible && (
+        <div
+          className="card card-sm"
+          style={{ marginBottom: "1rem" }}
+        >
+          <div
+            className="metric-label"
+            style={{ marginBottom: "0.5rem" }}
+          >
+            How the decision was made
           </div>
+
+          <p style={{ color: "var(--muted)" }}>
+            The applicant passed the deterministic eligibility
+            rules. The Logistic Regression model then estimated
+            the probability of loan default.
+          </p>
+
+          <p style={{ color: "var(--muted)" }}>
+            If the default probability is below{" "}
+            <strong>{result.threshold}</strong>, the application
+            is approved. Otherwise, it is rejected.
+          </p>
         </div>
       )}
 
-      {/* Loan suggestion */}
-      {suggestion?.suggestion === "reduce_loan_amount" && (
-        <div className="suggestion-box">
-          💡 <strong>Suggestion:</strong> {suggestion.reason}
-        </div>
-      )}
+      <button
+        className="back-btn"
+        onClick={onBack}
+      >
+        ← New Prediction
+      </button>
 
-      <button className="back-btn" onClick={onBack}>← New Prediction</button>
     </div>
   )
 }

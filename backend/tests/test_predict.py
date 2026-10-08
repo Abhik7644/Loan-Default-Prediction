@@ -1,99 +1,245 @@
 """
 tests/test_predict.py
-─────────────────────
-Unit tests for the prediction and preprocessing logic.
-Run: python -m pytest tests/ -v
+---------------------
+
+Tests for the current Loan Default Prediction system.
+
+Run:
+
+    python -m pytest tests/ -v
 """
 
-import sys, os
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import os
+import sys
 
-import pytest
-import pandas as pd
-from src.preprocess import fix_typos, handle_missing, encode_grade, add_features
-from src.predict    import check_emi_feasibility, suggest_loan_amount, _risk_label, _risk_score
-from config         import RISK_THRESHOLDS
+from fastapi.testclient import TestClient
 
-
-# ─── Preprocess tests ────────────────────────────────────────────────────────
-
-def test_fix_typos_term():
-    df = pd.DataFrame({"term": [" 36 Months", " 60 months", " 36 months"]})
-    result = fix_typos(df)
-    assert all(result["term"] == result["term"].str.lower())
-
-
-def test_handle_missing_numerical():
-    df = pd.DataFrame({"annual_inc": [50000, None, 30000], "dti": [10, 20, None]})
-    result = handle_missing(df)
-    assert result["annual_inc"].isnull().sum() == 0
-    assert result["dti"].isnull().sum() == 0
-
-
-def test_encode_grade():
-    df = pd.DataFrame({"grade": ["A", "B", "G"]})
-    result = encode_grade(df)
-    assert result.loc[0, "grade"] == 7
-    assert result.loc[1, "grade"] == 6
-    assert result.loc[2, "grade"] == 1
-
-
-def test_add_features_columns():
-    df = pd.DataFrame({
-        "annual_inc": [60000],
-        "dti":        [20],
-        "grade":      [5],
-        "revol_util": [40],
-    })
-    result = add_features(df)
-    assert "emi_to_income" in result.columns
-    assert "credit_risk_score" in result.columns
-
-
-# ─── EMI feasibility tests ───────────────────────────────────────────────────
-
-def test_emi_feasibility_affordable():
-    result = check_emi_feasibility(
-        annual_inc=120000, dti=10, loan_amount=10000, term_months=36
+# Allow imports from the backend directory
+sys.path.insert(
+    0,
+    os.path.dirname(
+        os.path.dirname(
+            os.path.abspath(__file__)
+        )
     )
-    assert "feasible" in result
-    assert result["monthly_inc"] == pytest.approx(10000.0, rel=0.01)
+)
+
+from app import app
+from src.eligibility import check_eligibility
+from src.predict import predict_loan
 
 
-def test_emi_feasibility_not_affordable():
-    result = check_emi_feasibility(
-        annual_inc=20000, dti=45, loan_amount=50000, term_months=36
+client = TestClient(app)
+
+
+# ============================================================
+# TEST DATA
+# ============================================================
+
+ELIGIBLE_APPLICANT = {
+    "grade": "C",
+    "annual_inc": 50000,
+    "short_emp": 0,
+    "emp_length_num": 5,
+    "home_ownership": "RENT",
+    "dti": 15,
+    "purpose": "credit_card",
+    "term": "36 months",
+    "last_delinq_none": 1,
+    "revol_util": 40,
+    "od_ratio": 0.5,
+}
+
+
+INELIGIBLE_APPLICANT = {
+    "grade": "G",
+    "annual_inc": 10000,
+    "short_emp": 0,
+    "emp_length_num": 2,
+    "home_ownership": "RENT",
+    "dti": 50,
+    "purpose": "other",
+    "term": "36 months",
+    "last_delinq_none": 1,
+    "revol_util": 95,
+    "od_ratio": 0.5,
+}
+
+
+# ============================================================
+# ELIGIBILITY TESTS
+# ============================================================
+
+def test_eligible_applicant_passes_rules():
+    applicant = {
+        "annual_inc": 50000,
+        "dti": 15,
+        "grade": 5,
+        "revol_util": 40,
+    }
+
+    result = check_eligibility(applicant)
+
+    assert result["eligible"] is True
+    assert result["failed_rules"] == []
+
+
+def test_ineligible_applicant_fails_rules():
+    applicant = {
+        "annual_inc": 10000,
+        "dti": 50,
+        "grade": 1,
+        "revol_util": 95,
+    }
+
+    result = check_eligibility(applicant)
+
+    assert result["eligible"] is False
+
+    assert "annual_income_too_low" in result["failed_rules"]
+    assert "dti_too_high" in result["failed_rules"]
+    assert "grade_too_low" in result["failed_rules"]
+    assert "revol_util_too_high" in result["failed_rules"]
+
+
+# ============================================================
+# PREDICTION LOGIC TESTS
+# ============================================================
+
+def test_ineligible_applicant_is_rejected():
+    result = predict_loan(
+        {
+            "grade": 1,
+            "annual_inc": 10000,
+            "short_emp": 0,
+            "emp_length_num": 2,
+            "home_ownership": "RENT",
+            "dti": 50,
+            "purpose": "other",
+            "term": "36 months",
+            "last_delinq_none": 1,
+            "revol_util": 95,
+            "od_ratio": 0.5,
+        }
     )
-    assert result["feasible"] == False
+
+    assert result["eligible"] is False
+    assert result["decision"] == "REJECTED"
+    assert "default_probability" not in result
+    assert "threshold" not in result
 
 
-def test_suggest_loan_reduces_for_high_amount():
-    result = suggest_loan_amount(
-        annual_inc=24000, dti=40, requested_amount=100000
+def test_eligible_applicant_gets_prediction():
+    result = predict_loan(
+        {
+            "grade": 5,
+            "annual_inc": 50000,
+            "short_emp": 0,
+            "emp_length_num": 5,
+            "home_ownership": "RENT",
+            "dti": 15,
+            "purpose": "credit_card",
+            "term": "36 months",
+            "last_delinq_none": 1,
+            "revol_util": 40,
+            "od_ratio": 0.5,
+        }
     )
-    assert result["suggestion"] == "reduce_loan_amount"
-    assert result["recommended"] < 100000
+
+    assert result["eligible"] is True
+    assert result["decision"] in ["APPROVED", "REJECTED"]
+
+    assert result["default_probability"] is not None
+    assert 0 <= result["default_probability"] <= 1
+
+    assert result["threshold"] == 0.55
 
 
-def test_suggest_loan_ok_for_small_amount():
-    result = suggest_loan_amount(
-        annual_inc=200000, dti=5, requested_amount=5000
+# ============================================================
+# API TESTS
+# ============================================================
+
+def test_health_endpoint():
+    response = client.get("/api/health")
+
+    assert response.status_code == 200
+
+    data = response.json()
+
+    assert data["status"] == "ok"
+
+
+def test_predict_endpoint_with_eligible_applicant():
+    response = client.post(
+        "/api/predict",
+        json=ELIGIBLE_APPLICANT,
     )
-    assert result["suggestion"] == "requested_amount_is_feasible"
+
+    assert response.status_code == 200
+
+    data = response.json()
+
+    assert data["eligible"] is True
+    assert data["decision"] in ["APPROVED", "REJECTED"]
+    assert data["default_probability"] is not None
+    assert 0 <= data["default_probability"] <= 1
+    assert data["threshold"] == 0.55
 
 
-# ─── Risk scoring tests ───────────────────────────────────────────────────────
+def test_predict_endpoint_with_ineligible_applicant():
+    response = client.post(
+        "/api/predict",
+        json=INELIGIBLE_APPLICANT,
+    )
 
-def test_risk_label_low():
-    assert _risk_label(RISK_THRESHOLDS["low"] - 0.01) == "Low Risk"
+    assert response.status_code == 200
 
-def test_risk_label_medium():
-    assert _risk_label(RISK_THRESHOLDS["low"] + 0.01) == "Medium Risk"
+    data = response.json()
 
-def test_risk_label_high():
-    assert _risk_label(RISK_THRESHOLDS["medium"] + 0.01) == "High Risk"
+    assert data["eligible"] is False
+    assert data["decision"] == "REJECTED"
 
-def test_risk_score_range():
-    for p in [0.0, 0.25, 0.5, 0.75, 1.0]:
-        s = _risk_score(p)
-        assert 0 <= s <= 100
+    assert "annual_income_too_low" in data["failed_rules"]
+    assert "dti_too_high" in data["failed_rules"]
+    assert "revol_util_too_high" in data["failed_rules"]
+
+    assert data["default_probability"] is None
+    assert data["threshold"] is None
+
+
+def test_predict_endpoint_rejects_invalid_grade():
+    applicant = ELIGIBLE_APPLICANT.copy()
+    applicant["grade"] = "Z"
+
+    response = client.post(
+        "/api/predict",
+        json=applicant,
+    )
+
+    assert response.status_code == 422
+
+
+def test_predict_endpoint_rejects_negative_income():
+    applicant = ELIGIBLE_APPLICANT.copy()
+    applicant["annual_inc"] = -5000
+
+    response = client.post(
+        "/api/predict",
+        json=applicant,
+    )
+
+    assert response.status_code == 422
+
+
+def test_model_stats_endpoint():
+    response = client.get("/api/model-stats")
+
+    assert response.status_code == 200
+
+    data = response.json()
+
+    assert data["model"] == "Logistic Regression"
+    assert data["threshold"] == 0.55
+    assert data["selection_metric"] == "F1"
+    assert data["dataset_size"] == 20000
+    assert data["features"] == 11
